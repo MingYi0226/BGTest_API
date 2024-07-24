@@ -1,0 +1,131 @@
+import re
+import sqlparse
+# Chat with an intelligent assistant in your terminal
+from openai import OpenAI
+
+# Point to the local server
+client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
+# Initial system message
+history = [
+    {"role": "system", "content": "You are an intelligent assistant. You always provide well-reasoned answers that are both correct and helpful."},
+]
+
+# Function to generate SQL from user question
+def generate_sql(question):
+    
+    prompt = f"""
+    Please provide only the SQLite query for the following requirement without any explanation or additional text: `{question}`
+    You are a data analyst and interpreter. You will be given information about a specific dataset, including its columns and their meanings:
+    people.first_name: This column is the first name of a person, example Cynthia
+    people.middle_name: This column is the middle name of a person and can be empty.
+    people.last_name: This column is the last name of a person, example Shanley
+    people.job_title: Represents the job of the person, example Indirect Buyer
+    people.person_city: Represents the city where the person lives.
+    people.person_state: Represents the state of the person, example North Carolina, FL
+    people.person_country: Country name of the person, example US, DE, Germany.
+    person.email_pattern: Represents how the email looks like, example [first].[last], [first_initial].[last]
+    person.email: Represents the email address of the person.
+    person.homepage_base_url: Represents the hompage url.
+    event.event_name: Represents the title of the event.
+    event.event_start_date: Represents the start date of the event in year-month format, exmample 2024-07-06.
+    event.event_end_date: Represents the end date of the event in year-month format, exmample 2024-07-06.
+    event.venue: Represents the place where the event occurs, example Suntec Singapore, Best Western Plus Hotel & Conference Center.
+    event.event_country: Represents the country where event occurs, example Singapore, Australia
+    event.event_description: Represents the details of the event.
+    event.event_url: Represents the url of the event.
+    event.event_industry: Represents ths industry that event belongs to.
+    company.company_revenue: Represents the profit of the company, example $355 million
+    event.n_employees: Represents the total number of employees of the company, example 1,001-5,000, 104.0
+
+    event.event_url=company.event_url.
+    company.homepage_base_url=people.homepage_base_url
+
+    If you cannot answer the question with the available database schema, return 'I do not know'
+    Current date is 2024-07-25.
+
+    Using this information, you will set up the most suitable SQLite statements to answer questions related to the data. These SQLite statements will later be executed, so they should be error-free, compatible with Sqllite syntax, and accurately respond to the questions asked. Do not express an opinion or try to explain. Return only the SQLite statement. Remember your sql statement will run on SQLite so syntax should be correct. 
+    You MUST dont use DATEADD, ILIKE, and INTERVAL syntax. 
+    And column names in query should be exist in the table.
+    Your output should be clear and void like this output 'Here is the SQLite statement to answer the question:'. Also, do not add any comment to the SQL statement which you will generate. Only return SQL statement.
+
+    DDL statements:
+    CREATE TABLE "people" (
+            "first_name"    TEXT,
+            "middle_name"   TEXT,
+            "last_name"     TEXT,
+            "job_title"     TEXT,
+            "person_city"   TEXT,
+            "person_state"  TEXT,
+            "person_country"        TEXT,
+            "email_pattern" TEXT,
+            "homepage_base_url"     TEXT,
+            "duration_in_current_job"       TEXT,
+            "duration_in_current_company"   TEXT,
+            "email"   TEXT
+    )
+    CREATE TABLE "event" (
+            "event_logo_url"        TEXT,
+            "event_name"    TEXT,
+            "event_start_date"      TEXT,
+            "event_end_date"        TEXT,
+            "event_venue"   TEXT,
+            "event_country" TEXT,
+            "event_description"     TEXT,
+            "event_url"     TEXT,
+            "event_industry"   TEXT
+    )
+    CREATE TABLE "company" (
+            "company_logo_url"      TEXT,
+            "company_logo_text"     TEXT,
+            "company_name"  TEXT,
+            "relation_to_event"     TEXT,
+            "event_url"     TEXT,
+            "company_revenue"       TEXT,
+            "n_employees"   TEXT,
+            "company_phone" TEXT,
+            "company_founding_year" TEXT,
+            "company_address"       TEXT,
+            "company_industry"      TEXT,
+            "company_overview"      TEXT,
+            "homepage_url"  TEXT,
+            "linkedin_company_url"  TEXT,
+            "homepage_base_url"     TEXT,
+            "company_logo_url_on_event_page"        TEXT,
+            "company_logo_match_flag"       TEXT
+    )
+The following SQLite query best answers the question `{question}`:
+    """
+
+    completion = client.chat.completions.create(
+        model="PrunaAI/defog-llama-3-sqlcoder-8b-GGUF-smashed",
+        messages=[
+            {"role": "system", "content": "You are an intelligent assistant. You always provide well-reasoned answers that are both correct and helpful."},
+            {"role": "user", "content": prompt}
+            ],
+        stop='end_of_text'
+        # temperature=0.7,
+        # stream=True,
+    )
+
+    new_message = {"role": "assistant", "content": ""}
+    new_message["content"] = completion.choices[0].message.content
+
+    # Add the assistant's response to the history
+    history.append(new_message)
+    
+    sql_query_match = re.search(r"SELECT.*?(?=\n\n|\Z)", new_message["content"] , re.DOTALL)
+    
+    if sql_query_match:
+        sql_query = sql_query_match.group(0).strip()
+    else:
+        sql_query = "No SQL query found"
+
+    formatted_sql = sqlparse.format(sql_query, reindent=True)
+
+    
+    return formatted_sql.split(';')[0]
+
+
+# Example usage
+question = 'Find me companies that are attending "Oil & Gas" related events over the next 12 months.'
+print(generate_sql(question.lower()))

@@ -1,5 +1,7 @@
 import json
+import openai
 import uvicorn
+import sqlparse
 from typing import Optional
 from models import Base, People
 from database import engine, SessionLocal
@@ -7,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from fastapi import FastAPI, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
+from common import table_metadata
 
 # Create all database tables
 Base.metadata.create_all(bind=engine)
@@ -46,8 +49,11 @@ async def process(prompt: Optional[str] = Form(None), db: Session = Depends(get_
         if "content" not in payload:
             raise Exception("Not valid query")
         
+        #  Convert user query to SQLite statement
+        query = query2sql(payload["content"])
+        
         # Perform SQL query
-        result = db.execute(text("SELECT * FROM people WHERE first_name = :name"), {'name': payload["content"]})
+        result = db.execute(text(query))
         
         # Extract column names, drop id column
         columns = list(filter(lambda x: x != 'id', [col[0] for col in result.cursor.description]))
@@ -91,7 +97,56 @@ def parse_env_file():
     
     return host, port
 
+def query2sql(query):
+    formatted_sql = ''
+    try:
+        prompt = f"""
+            {table_metadata}
+            Now please convert the query below into working SQLite and execute it:
+            {query}
+        """
+        messages = [
+            {
+                "role": "user", "content": prompt
+            }
+        ]
+        functions = [
+        {
+                "name": "sql_query",
+                "description": "Execute the given SQL query and return the results",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_query": {
+                            "type": "string",
+                            "description": "The SQL query to execute",
+                        }                },
+                    "required": ["target_query"],
+                },
+            }
+        ]
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            functions=functions,
+            function_call="auto",
+        )
+        response_message = json.loads(response["choices"][0]["message"]["function_call"]["arguments"])["target_query"]
+        formatted_sql = sqlparse.format(response_message, reindent=True)
+    except:
+        pass
+    return formatted_sql
+
 if __name__ == "__main__":
+    # Read OpenAI secretAPI
+    with open('secret') as f:
+        try:
+            key = f.readlines()[0]
+        except Exception as e:
+            print("Error occured to load OpenAI key!")
+        finally:
+            openai.api_key = key
+    
     # Load host and port from env file
     host_name, port_num = parse_env_file()
     uvicorn.run("main:app", host=host_name, port=port_num)
